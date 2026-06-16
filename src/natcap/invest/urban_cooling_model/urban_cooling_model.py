@@ -305,13 +305,13 @@ MODEL_SPEC = spec.ModelSpec(
             data_type=float,
             units=u.degree_Celsius
         ),
-        spec.SingleBandRasterOutput(
-            id="hm",
-            path="hm.tif",
-            about=gettext("Map of heat mitigation index."),
-            data_type=float,
-            units=u.none
-        ),
+        # spec.SingleBandRasterOutput(
+        #     id="hm",
+        #     path="hm.tif",
+        #     about=gettext("Map of heat mitigation index."),
+        #     data_type=float,
+        #     units=u.none
+        # ),
         spec.SingleBandRasterOutput(
             id="cc",
             path="cc.tif",
@@ -392,13 +392,13 @@ MODEL_SPEC = spec.ModelSpec(
                 )
             ]
         ),
-        spec.SingleBandRasterOutput(
-            id="cc_park",
-            path="intermediate/cc_park.tif",
-            about=gettext("Map of cooling capacity decayed by proximity to greenspace"),
-            data_type=float,
-            units=u.none
-        ),
+        # spec.SingleBandRasterOutput(
+        #     id="cc_park",
+        #     path="intermediate/cc_park.tif",
+        #     about=gettext("Map of cooling capacity decayed by proximity to greenspace"),
+        #     data_type=float,
+        #     units=u.none
+        # ),
         spec.SingleBandRasterOutput(
             id="cc_masked_green_areas",
             path="intermediate/cc_masked_green_areas.tif",
@@ -771,15 +771,16 @@ def execute(args):
 
     green_area_decay_kernel_distance = int(numpy.round(
         args['green_area_cooling_distance'] / cell_size))
-    cc_park_task = task_graph.add_task(
-        func=convolve_2d_by_exponential,
-        args=(
-            green_area_decay_kernel_distance,
-            file_registry['cc_masked_green_areas'],
-            file_registry['cc_park']),
-        target_path_list=[file_registry['cc_park']],
-        dependent_task_list=[green_area_cc_task],
-        task_name='calculate CC park')
+    
+    # cc_park_task = task_graph.add_task(
+    #     func=convolve_2d_by_exponential,
+    #     args=(
+    #         green_area_decay_kernel_distance,
+    #         file_registry['cc_masked_green_areas'],
+    #         file_registry['cc_park']),
+    #     target_path_list=[file_registry['cc_park']],
+    #     dependent_task_list=[green_area_cc_task],
+    #     task_name='calculate CC park')
 
     area_kernel_task = task_graph.add_task(
         func=pygeoprocessing.kernels.dichotomous_kernel,
@@ -809,27 +810,38 @@ def execute(args):
     #
     # convert 2 hectares to number of pixels
     green_area_threshold = 2e4 / cell_size**2
-    hm_task = task_graph.add_task(
-        func=pygeoprocessing.raster_calculator,
-        args=([
-            (file_registry['cc'], 1),
-            (file_registry['green_area_sum'], 1),
-            (file_registry['cc_park'], 1),
-            (green_area_threshold, 'raw')
-        ], hm_op, file_registry['hm'], gdal.GDT_Float32, TARGET_NODATA),
-        target_path_list=[file_registry['hm']],
-        dependent_task_list=[cc_task, green_area_sum_task, cc_park_task],
-        task_name='calculate HM index')
+    
+    green_area_effect_task = task_graph.add_task(
+        func= compute_green_area_effect,
+        args=(file_registry['green_area_sum']),
+        target_path_list=[file_registry['added_green_effect']],
+        dependent_task_list=[green_area_sum_task],
+        task_name='calculate added effect of large green spaces'
+    )
+    # EK - removing HM task and doing everything with CCi and logistic for bonus effect of green spaces
+
+    # hm_task = task_graph.add_task(
+    #     func=pygeoprocessing.raster_calculator,
+    #     args=([
+    #         (file_registry['cc'], 1),
+    #         (file_registry['green_area_sum'], 1),
+    #         (file_registry['cc_park'], 1),
+    #         (green_area_threshold, 'raw')
+    #     ], hm_op, file_registry['hm'], gdal.GDT_Float32, TARGET_NODATA),
+    #     target_path_list=[file_registry['hm']],
+    #     dependent_task_list=[cc_task, green_area_sum_task, cc_park_task],
+    #     task_name='calculate HM index')
 
     t_air_nomix_task = task_graph.add_task(
         func=pygeoprocessing.raster_calculator,
         args=([(args['t_ref'], 'raw'),
-               (file_registry['hm'], 1),
-               (args['uhi_max'], 'raw')],
+               (file_registry['cc'], 1), 
+               (args['uhi_max'], 'raw'),
+               (file_registry['added_green_effect'])],
               calc_t_air_nomix_op, file_registry['t_air_nomix'], gdal.GDT_Float32,
               TARGET_NODATA),
         target_path_list=[file_registry['t_air_nomix']],
-        dependent_task_list=[hm_task, align_task],
+        dependent_task_list=[green_area_effect_task, align_task],
         task_name='calculate T air nomix')
 
     decay_kernel_distance = int(numpy.round(
@@ -1324,27 +1336,27 @@ def pickle_zonal_stats(
     with open(target_pickle_path, 'wb') as pickle_file:
         pickle.dump(zonal_stats, pickle_file)
 
-
-def calc_t_air_nomix_op(t_ref_val, hm_array, uhi_max):
-    """Calculate air temperature T_(air,i)=T_ref+(1-HM_i)*UHI_max.
+def calc_t_air_nomix_op(t_ref_val, cc_array, uhi_max, added_green_effect):
+    """Calculate air temperature T_(air_nomix,i)=T_ref+(1-CC_i)*UHI_max*added_green_effect.
 
     Args:
         t_ref_val (float): The user-defined reference air temperature in
             degrees Celsius.
-        hm_array (numpy.ndarray): The calculated Heat Mitigation index from
+        cc_array (numpy.ndarray): The calculated Heat Mitigation index from
             equation 5 in the User's Guide.
         uhi_max (float): The user-defined maximum UHI magnitude.
+        added_green_effect (float): additional effect based on size of green spaces, ranges from 1-4.  
 
     Returns:
-        A numpy array with the same dimensions as ``hm_array`` with the
+        A numpy array with the same dimensions as ``cc_array`` with the
         calculated T_air_nomix values.
 
     """
-    result = numpy.empty(hm_array.shape, dtype=numpy.float32)
+    result = numpy.empty(cc_array.shape, dtype=numpy.float32)
     result[:] = TARGET_NODATA
     # TARGET_NODATA should never be None
-    valid_mask = ~pygeoprocessing.array_equals_nodata(hm_array, TARGET_NODATA)
-    result[valid_mask] = t_ref_val + (1-hm_array[valid_mask]) * uhi_max
+    valid_mask = ~pygeoprocessing.array_equals_nodata(cc_array, TARGET_NODATA)
+    result[valid_mask] = t_ref_val + (1-cc_array[valid_mask]) * uhi_max
     return result
 
 
@@ -1461,6 +1473,17 @@ def hm_op(cc_array, green_area_sum, cc_park_array, green_area_threshold):
     result[~cc_mask & valid_mask] = cc_park_array[~cc_mask & valid_mask]
     return result
 
+def compute_green_area_effect(area):
+    """
+    Uses a logistic function on the area of green space to determine the added
+    cooling effect based on its size. Based on the Cao et al. 2010 estimate that 
+    there is little effect before 2ha, rising effect from 2-8 ha, and then it evens
+    out around 4 deg extra effect for everything greater than 8 ha. 
+    Args:
+        area (float)
+    """
+
+    1 + 3/(1 + numpy.exp(-1.5*(area - 5)))
 
 def mask_cc_green_areas_op(green_area_array, cc_array):
     """
