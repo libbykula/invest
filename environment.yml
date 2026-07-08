@@ -1,0 +1,34 @@
+name: invest_upd
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - gdal>=3.4.2
+  - pandas>=1.2.1
+  - numpy>=1.11.0,!=1.16.0
+  - rtree>=0.8.2,!=0.9.1
+  - shapely>=2.0.0
+  - scipy>=1.9.0
+  - psutil>=5.6.6
+  - chardet>=3.0.4
+  - pint
+  - babel
+  - flask
+  - flask-cors
+  - requests
+  - pydantic
+  - certifi
+  - docutils
+  - altair>=6.0.0
+  - fiona
+  - geopandas
+  - jinja2
+  - matplotlib
+  - distinctipy
+  - pip
+  - pip:
+    - pyro5
+    - pygeoprocessing>=2.4.10
+    - taskgraph>=0.11.0
+    - geometamaker>=0.3.1
